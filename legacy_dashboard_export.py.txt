@@ -1,0 +1,750 @@
+
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
+
+# ==========================================================
+# Legacy Streamlit dashboard export (reference only; not an application entry point)
+# ==========================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+DATA_FILENAME = "amazon_sales_50000_ml_dataset.csv"
+MODEL_FILENAME = "amazon_demand_random_forest.joblib"
+
+st.set_page_config(
+    page_title="Sales Intelligence | Analytics Platform",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# -------------------- THEME --------------------
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+}
+
+.stApp {
+    background: #F4F7FB;
+    color: #17243A;
+}
+
+[data-testid="stSidebar"] {
+    background: #101B30;
+}
+
+[data-testid="stSidebar"] * {
+    color: #E6EDF7 !important;
+}
+
+[data-testid="stSidebar"] hr {
+    border-color: #31415B;
+}
+
+.block-container {
+    max-width: 1500px;
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+}
+
+h1, h2, h3 {
+    color: #17243A;
+    letter-spacing: -0.5px;
+}
+
+[data-testid="stMetric"] {
+    background: #FFFFFF;
+    border: 1px solid #E4EAF2;
+    border-radius: 14px;
+    padding: 20px 22px;
+    box-shadow: 0 3px 12px rgba(20, 40, 75, 0.035);
+}
+
+[data-testid="stMetricLabel"] {
+    color: #68778D;
+    font-size: 0.85rem;
+}
+
+[data-testid="stMetricValue"] {
+    color: #15233B;
+    font-weight: 750;
+}
+
+div.stButton > button,
+div.stFormSubmitButton > button {
+    background: #2563EB;
+    color: white;
+    border: 0;
+    border-radius: 9px;
+    min-height: 42px;
+    font-weight: 600;
+}
+
+div.stButton > button:hover,
+div.stFormSubmitButton > button:hover {
+    background: #1D4ED8;
+    color: white;
+}
+
+[data-testid="stAlert"] {
+    border-radius: 10px;
+}
+
+div[data-testid="stDataFrame"] {
+    border: 1px solid #E4EAF2;
+    border-radius: 12px;
+}
+
+.eyebrow {
+    color: #2563EB;
+    font-weight: 700;
+    font-size: 0.76rem;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}
+
+.hero {
+    background: linear-gradient(120deg, #12213B, #1E3A68);
+    border-radius: 18px;
+    padding: 30px 32px;
+    color: white;
+    margin-bottom: 25px;
+}
+
+.hero h1 {
+    color: white !important;
+    font-size: 2rem;
+    margin: 8px 0;
+}
+
+.hero p {
+    color: #D5E1F2;
+    margin-bottom: 0;
+    font-size: 0.96rem;
+}
+
+.section-note {
+    color: #697A91;
+    font-size: 0.86rem;
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
+# -------------------- FILE DISCOVERY --------------------
+
+def locate_file(filename, preferred_folder=None):
+    candidates = []
+
+    if preferred_folder:
+        candidates.append(BASE_DIR / preferred_folder / filename)
+
+    candidates.extend([
+        BASE_DIR / filename,
+        BASE_DIR / "data" / "raw" / filename,
+        BASE_DIR / "models" / filename,
+        BASE_DIR.parent / filename,
+        Path.home() / "Downloads" / filename,
+        Path.home() / "Desktop" / filename,
+        Path.home() / "Documents" / filename,
+    ])
+
+    seen = set()
+
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+
+            if resolved in seen:
+                continue
+
+            seen.add(resolved)
+
+            if resolved.is_file():
+                return resolved
+
+        except (OSError, RuntimeError):
+            pass
+
+    # Search within this project only.
+    try:
+        for path in BASE_DIR.rglob(filename):
+            if path.is_file():
+                return path.resolve()
+    except OSError:
+        pass
+
+    return None
+
+
+DATA_PATH = locate_file(DATA_FILENAME, "data")
+MODEL_PATH = locate_file(MODEL_FILENAME, "models")
+
+
+# -------------------- LOAD DATA --------------------
+
+@st.cache_data
+def load_data(path, modified):
+    data = pd.read_csv(path)
+
+    required = {
+        "Date", "Order_ID", "Product", "Category",
+        "Quantity", "Total_Sales", "Order_Status"
+    }
+
+    missing = required - set(data.columns)
+
+    if missing:
+        raise ValueError(
+            f"Missing required CSV columns: {sorted(missing)}"
+        )
+
+    data["Date"] = pd.to_datetime(
+        data["Date"], errors="coerce"
+    )
+
+    for col in ["Quantity", "Total_Sales"]:
+        data[col] = pd.to_numeric(
+            data[col], errors="coerce"
+        )
+
+    data = data.dropna(
+        subset=["Date", "Product", "Quantity", "Total_Sales"]
+    ).copy()
+
+    for col in ["Category", "Product", "Order_Status"]:
+        data[col] = data[col].astype(str).str.strip()
+
+    return data
+
+
+@st.cache_resource
+def load_model(path, modified):
+    return joblib.load(path)
+
+
+df = None
+model = None
+data_error = None
+model_error = None
+
+if DATA_PATH:
+    try:
+        df = load_data(
+            str(DATA_PATH), DATA_PATH.stat().st_mtime
+        )
+    except Exception as exc:
+        data_error = str(exc)
+
+if MODEL_PATH:
+    try:
+        model = load_model(
+            str(MODEL_PATH), MODEL_PATH.stat().st_mtime
+        )
+    except Exception as exc:
+        model_error = str(exc)
+
+
+# -------------------- SIDEBAR --------------------
+
+with st.sidebar:
+    st.markdown("## ◈ Sales Intelligence")
+    st.caption("MACHINE LEARNING PLATFORM")
+    st.divider()
+
+    page = st.radio(
+        "WORKSPACE",
+        [
+            "Executive Overview",
+            "Product Intelligence",
+            "Demand Prediction",
+            "Data Quality",
+        ],
+        label_visibility="visible",
+    )
+
+    st.divider()
+    st.caption("PROJECT STATUS")
+
+    st.write(
+        "Dataset",
+        "🟢 Loaded" if df is not None else "🔴 Missing",
+    )
+
+    st.write(
+        "ML Model",
+        "🟢 Loaded" if model is not None else "🟠 Unavailable",
+    )
+
+    with st.expander("Technical diagnostics"):
+        st.caption("Project root")
+        st.code(str(BASE_DIR))
+
+        st.caption("Dataset path")
+        st.code(str(DATA_PATH) if DATA_PATH else "Not found")
+
+        st.caption("Model path")
+        st.code(str(MODEL_PATH) if MODEL_PATH else "Not found")
+
+        if data_error:
+            st.error(data_error)
+
+        if model_error:
+            st.error(model_error)
+
+
+# -------------------- ERROR HANDLING --------------------
+
+if df is None:
+    st.markdown(
+        '<div class="hero"><p>ANALYTICS WORKSPACE</p>'
+        '<h1>Sales Intelligence</h1>'
+        '<p>Business insights and ML-driven demand planning.</p></div>',
+        unsafe_allow_html=True,
+    )
+
+    st.error("The sales dataset could not be loaded.")
+
+    st.write(
+        "Place the CSV at `data/raw/"
+        "amazon_sales_50000_ml_dataset.csv` "
+        "inside your project directory."
+    )
+
+    if data_error:
+        st.code(data_error)
+
+    st.stop()
+
+
+# -------------------- SHARED FILTERS --------------------
+
+st.sidebar.divider()
+st.sidebar.markdown("### FILTERS")
+
+categories = sorted(df["Category"].dropna().unique().tolist())
+statuses = sorted(df["Order_Status"].dropna().unique().tolist())
+
+selected_categories = st.sidebar.multiselect(
+    "Categories",
+    categories,
+    default=categories,
+)
+
+selected_statuses = st.sidebar.multiselect(
+    "Order status",
+    statuses,
+    default=statuses,
+)
+
+min_date = df["Date"].min().date()
+max_date = df["Date"].max().date()
+
+date_selection = st.sidebar.date_input(
+    "Date range",
+    value=(min_date, max_date),
+    min_value=min_date,
+    max_value=max_date,
+)
+
+if isinstance(date_selection, (tuple, list)) and len(date_selection) == 2:
+    start_date, end_date = date_selection
+else:
+    start_date, end_date = min_date, max_date
+
+filtered = df[
+    df["Category"].isin(selected_categories)
+    & df["Order_Status"].isin(selected_statuses)
+    & df["Date"].dt.date.between(start_date, end_date)
+].copy()
+
+if filtered.empty:
+    st.warning("No data matches your filters. Update the sidebar selections.")
+    st.stop()
+
+
+# -------------------- HEADER --------------------
+
+st.markdown(
+    '<div class="eyebrow">BUSINESS INTELLIGENCE / MACHINE LEARNING</div>',
+    unsafe_allow_html=True,
+)
+
+st.title(page)
+st.caption(
+    f"Reporting period: {start_date:%d %b %Y} — "
+    f"{end_date:%d %b %Y}"
+)
+
+
+# -------------------- EXECUTIVE OVERVIEW --------------------
+
+if page == "Executive Overview":
+
+    st.markdown("""
+    <div class="hero">
+        <p>BUSINESS PERFORMANCE CENTER</p>
+        <h1>Understand your sales. Plan your demand.</h1>
+        <p>Monitor commercial performance, product trends and
+        historical demand from one workspace.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    total_sales = filtered["Total_Sales"].sum()
+    total_units = filtered["Quantity"].sum()
+    order_count = filtered["Order_ID"].nunique()
+
+    delivered_orders = filtered.loc[
+        filtered["Order_Status"] == "Delivered",
+        "Order_ID"
+    ].nunique()
+
+    cancelled_orders = filtered.loc[
+        filtered["Order_Status"] == "Cancelled",
+        "Order_ID"
+    ].nunique()
+
+    k1, k2, k3, k4 = st.columns(4)
+
+    k1.metric("Recorded Sales", f"{total_sales:,.0f}")
+    k2.metric("Units Ordered", f"{total_units:,.0f}")
+    k3.metric("Unique Orders", f"{order_count:,}")
+    k4.metric("Delivered Orders", f"{delivered_orders:,}")
+
+    st.caption(
+        "Recorded sales include the selected statuses; "
+        "they are not necessarily realized revenue."
+    )
+
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("Category Performance")
+
+        category_sales = (
+            filtered.groupby("Category", as_index=False)
+            ["Total_Sales"].sum()
+            .sort_values("Total_Sales", ascending=True)
+        )
+
+        fig = px.bar(
+            category_sales,
+            x="Total_Sales",
+            y="Category",
+            orientation="h",
+            template="plotly_white",
+            labels={
+                "Total_Sales": "Recorded Sales",
+                "Category": "",
+            },
+        )
+
+        fig.update_traces(marker_color="#3478F6")
+        fig.update_layout(
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    with right:
+        st.subheader("Monthly Sales Trend")
+
+        monthly = (
+            filtered.assign(
+                Month=filtered["Date"].dt.to_period("M").astype(str)
+            )
+            .groupby("Month", as_index=False)
+            ["Total_Sales"].sum()
+        )
+
+        fig = px.line(
+            monthly,
+            x="Month",
+            y="Total_Sales",
+            markers=True,
+            template="plotly_white",
+            labels={"Total_Sales": "Recorded Sales"},
+        )
+
+        fig.update_traces(
+            line=dict(color="#3478F6", width=3)
+        )
+
+        fig.update_layout(
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Top Products")
+
+    top_products = (
+        filtered.groupby("Product", as_index=False)
+        .agg(
+            Recorded_Sales=("Total_Sales", "sum"),
+            Units_Ordered=("Quantity", "sum"),
+            Orders=("Order_ID", "nunique"),
+        )
+        .sort_values("Recorded_Sales", ascending=False)
+        .head(10)
+    )
+
+    st.dataframe(
+        top_products,
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.download_button(
+        "Export top products",
+        data=top_products.to_csv(index=False).encode("utf-8"),
+        file_name="top_products.csv",
+        mime="text/csv",
+    )
+
+
+# -------------------- PRODUCT INTELLIGENCE --------------------
+
+elif page == "Product Intelligence":
+
+    st.subheader("Product Performance Analysis")
+
+    product_table = (
+        filtered.groupby(["Product", "Category"], as_index=False)
+        .agg(
+            Recorded_Sales=("Total_Sales", "sum"),
+            Units_Ordered=("Quantity", "sum"),
+            Order_Count=("Order_ID", "nunique"),
+        )
+        .sort_values("Recorded_Sales", ascending=False)
+    )
+
+    fig = px.scatter(
+        product_table,
+        x="Units_Ordered",
+        y="Recorded_Sales",
+        size="Order_Count",
+        color="Category",
+        hover_name="Product",
+        template="plotly_white",
+        title="Product Volume vs Recorded Sales",
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(
+        product_table,
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.download_button(
+        "Download product analysis",
+        data=product_table.to_csv(index=False).encode("utf-8"),
+        file_name="product_intelligence.csv",
+        mime="text/csv",
+    )
+
+
+# -------------------- DEMAND PREDICTION --------------------
+
+elif page == "Demand Prediction":
+
+    st.subheader("Next-Day Demand Estimation")
+
+    st.write(
+        "The current model is a one-day-ahead regression model. "
+        "Supply the previous 14 daily demand observations in "
+        "chronological order, oldest first."
+    )
+
+    if model is None:
+        st.warning(
+            "The dashboard is working, but the trained model is "
+            "not available yet. Run the model-save cell in your "
+            "notebook, then restart Streamlit."
+        )
+
+        if model_error:
+            st.error(f"Model loading error: {model_error}")
+
+        st.code(
+            "models/amazon_demand_random_forest.joblib",
+            language="text",
+        )
+
+    else:
+        products = sorted(df["Product"].dropna().unique().tolist())
+
+        product = st.selectbox("Product", products)
+
+        forecast_date = st.date_input(
+            "Forecast date",
+            value=max_date + pd.Timedelta(days=1),
+        )
+
+        with st.form("forecast_form"):
+            st.write("Previous 14 daily demand values")
+
+            history = []
+
+            cols = st.columns(2)
+
+            for i in range(14):
+                with cols[i % 2]:
+                    history.append(
+                        st.number_input(
+                            f"Day {i + 1}",
+                            min_value=0,
+                            max_value=100000,
+                            value=10,
+                            step=1,
+                            key=f"history_{i}",
+                        )
+                    )
+
+            predict = st.form_submit_button(
+                "Generate Demand Estimate",
+                use_container_width=True,
+            )
+
+        if predict:
+            dt = pd.Timestamp(forecast_date)
+
+            features = pd.DataFrame([{
+                "Day_Of_Week": dt.dayofweek,
+                "Day_Of_Month": dt.day,
+                "Month": dt.month,
+                "Is_Weekend": int(dt.dayofweek >= 5),
+                "Lag_1": history[-1],
+                "Lag_7": history[-7],
+                "Lag_14": history[-14],
+                "Rolling_Mean_7": float(np.mean(history[-7:])),
+                "Product": product,
+            }])
+
+            try:
+                prediction = max(
+                    0.0,
+                    float(model.predict(features)[0]),
+                )
+
+                c1, c2 = st.columns(2)
+
+                c1.metric(
+                    "Predicted Units",
+                    f"{prediction:.1f}",
+                )
+
+                c2.metric(
+                    "Rounded Planning Estimate",
+                    f"{int(np.ceil(prediction))}",
+                )
+
+                st.caption(
+                    "Experimental estimate, not a guaranteed "
+                    "inventory recommendation. Validate model "
+                    "performance before operational use."
+                )
+
+                output = pd.DataFrame([{
+                    "Product": product,
+                    "Forecast_Date": str(forecast_date),
+                    "Predicted_Units": prediction,
+                }])
+
+                st.download_button(
+                    "Download forecast",
+                    data=output.to_csv(index=False).encode("utf-8"),
+                    file_name="demand_forecast.csv",
+                    mime="text/csv",
+                )
+
+            except Exception as exc:
+                st.error(f"Prediction failed: {exc}")
+
+
+# -------------------- DATA QUALITY --------------------
+
+elif page == "Data Quality":
+
+    st.subheader("Dataset Health")
+
+    total_rows = len(df)
+    duplicate_rows = int(df.duplicated().sum())
+    missing_cells = int(df.isna().sum().sum())
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric("Records", f"{total_rows:,}")
+    c2.metric("Duplicate Rows", f"{duplicate_rows:,}")
+    c3.metric("Missing Cells", f"{missing_cells:,}")
+
+    missing_table = pd.DataFrame({
+        "Column": df.columns,
+        "Missing_Count": [
+            int(df[col].isna().sum()) for col in df.columns
+        ],
+        "Missing_Percentage": [
+            round(df[col].isna().mean() * 100, 2)
+            for col in df.columns
+        ],
+    }).sort_values("Missing_Percentage", ascending=False)
+
+    st.subheader("Missing Value Report")
+
+    st.dataframe(
+        missing_table,
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.subheader("Order Status Distribution")
+
+    status_data = (
+        df["Order_Status"]
+        .value_counts()
+        .rename_axis("Order_Status")
+        .reset_index(name="Order_Count")
+    )
+
+    fig = px.bar(
+        status_data,
+        x="Order_Status",
+        y="Order_Count",
+        color="Order_Status",
+        template="plotly_white",
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.download_button(
+        "Download data quality report",
+        data=missing_table.to_csv(index=False).encode("utf-8"),
+        file_name="data_quality_report.csv",
+        mime="text/csv",
+    )
+
+
+# -------------------- FOOTER --------------------
+
+st.divider()
+
+st.caption(
+    "Sales Intelligence & Order Prediction | "
+    "Machine Learning Portfolio Project | "
+    "Sample dataset — not official Amazon data"
+)

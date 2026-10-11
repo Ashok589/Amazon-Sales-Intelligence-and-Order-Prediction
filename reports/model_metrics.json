@@ -1,0 +1,73 @@
+{
+  "model_version": "1.0.0",
+  "model_name": "Random forest (shallow)",
+  "target": "daily product units ordered (Delivered and Pending; Cancelled excluded)",
+  "features": [
+    "Day_Of_Week",
+    "Day_Of_Month",
+    "Month",
+    "Is_Weekend",
+    "Lag_1",
+    "Lag_7",
+    "Lag_14",
+    "Rolling_Mean_7",
+    "Product"
+  ],
+  "validation_metrics": [
+    {
+      "model": "Seasonal naive (Lag 7)",
+      "mae": 6.491666666666666,
+      "rmse": 8.272276322485581,
+      "wape_percent": 46.77274091864305,
+      "mean_error": -0.08888888888888889
+    },
+    {
+      "model": "Random forest (regularized)",
+      "mae": 4.961148423844381,
+      "rmse": 6.172939639905266,
+      "wape_percent": 35.74529035492799,
+      "mean_error": -0.17168953665654405
+    },
+    {
+      "model": "Random forest (shallow)",
+      "mae": 4.881936716911226,
+      "rmse": 6.089700056275339,
+      "wape_percent": 35.17456655835167,
+      "mean_error": 0.014724546634406564
+    }
+  ],
+  "test_metrics": [
+    {
+      "model": "Seasonal naive (Lag 7)",
+      "mae": 6.6125,
+      "rmse": 8.425078304944378,
+      "wape_percent": 48.25174825174825,
+      "mean_error": -0.001388888888888889
+    },
+    {
+      "model": "Random forest (shallow)",
+      "mae": 4.862354734745493,
+      "rmse": 6.217364243272498,
+      "wape_percent": 35.48084938701484,
+      "mean_error": -0.1656090668945263
+    }
+  ],
+  "split": {
+    "train_start": "2026-01-15",
+    "train_end": "2026-08-01",
+    "validation_start": "2026-08-02",
+    "validation_end": "2026-08-31",
+    "test_start": "2026-09-01",
+    "test_end": "2026-09-30"
+  },
+  "row_counts": {
+    "input_orders": 50000,
+    "invalid_rows_excluded": 0,
+    "training": 4776,
+    "validation": 720,
+    "test": 720,
+    "products": 24
+  },
+  "forecast_horizon": "one day ahead, using observed prior demand",
+  "evaluation_method": "Chronological holdout. The validation window selects the Random Forest configuration; test data is not used for selection."
+}
